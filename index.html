@@ -1,1 +1,105 @@
 
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>NeonClipping Web</title>
+<style>
+*{box-sizing:border-box}
+body{
+ margin:0;background:#0b0d17;color:white;
+ font-family:Arial,sans-serif;padding:20px
+}
+.container{max-width:650px;margin:auto}
+h1{color:#a78bfa;font-size:27px}
+p{color:#aaa}
+.card{
+ background:#171a2b;padding:20px;
+ border:1px solid #30334a;
+ border-radius:15px;margin:18px 0
+}
+label{display:block;margin:15px 0 8px}
+input,select{
+ width:100%;padding:13px;border-radius:9px;
+ background:#252940;color:white;
+ border:1px solid #454968
+}
+button{
+ width:100%;padding:15px;margin-top:20px;
+ border:0;border-radius:10px;
+ background:#8055ed;color:white;
+ font-size:16px;font-weight:bold
+}
+small{color:#aaa}
+</style>
+</head>
+<body>
+<div class="container">
+<h1>⚡ NEON CLIPPING</h1>
+<p>Create your next viral Shorts!</p>
+
+<div class="card">
+<h2>🎬 Create Clips</h2>
+
+<label>YouTube / Twitch / Kick URL</label>
+<input id="url" type="url"
+placeholder="Paste your video link">
+
+<label>Or upload your video</label>
+<input id="video" type="file"
+accept="video/*">
+
+<label>Clip duration</label>
+<select id="duration">
+<option>20-30 seconds</option>
+<option>30-45 seconds</option>
+<option>45-60 seconds</option>
+</select>
+
+<label>Video format</label>
+<select id="format">
+<option>9:16 Vertical Shorts</option>
+<option>16:9 Landscape</option>
+<option>1:1 Square</option>
+</select>
+
+<label>Captions</label>
+<select id="captions">
+<option>ON</option>
+<option>OFF</option>
+</select>
+
+<button onclick="createClips()">
+⚡ MAKE CLIPS
+</button>
+<p id="status"></p>
+</div>
+
+<div class="card">
+<h2>📁 My Clips</h2>
+<p>Your exported clips will appear here
+after the processing backend is connected.</p>
+</div>
+
+<small>NeonClipping Web Edition</small>
+</div>
+
+<script>
+function createClips(){
+ const url=document.getElementById('url').value;
+ const video=document.getElementById('video').files[0];
+ const status=document.getElementById('status');
+
+ if(!url && !video){
+  status.textContent="Please enter a video link or select a video.";
+  return;
+ }
+
+ status.textContent=
+ "Website interface ready. Video processing backend is not connected yet.";
+}
+</script>
+</body>
+</html>
+
