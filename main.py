@@ -87,3 +87,12 @@ async def process_video(file: UploadFile = File(...)):
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(500, "Processing error")
       
+fastapi.middleware.corsapp.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://sahilshaikh4585-cloud.github.io"
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+        )
