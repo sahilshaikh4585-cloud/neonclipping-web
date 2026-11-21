@@ -1,4 +1,5 @@
 
+
 <!DOCTYPE html>
 <html lang="en">
 <head>
@@ -31,7 +32,9 @@ button{
  background:#8055ed;color:white;
  font-size:16px;font-weight:bold
 }
+button:disabled{opacity:.5}
 small{color:#aaa}
+#status{overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -44,11 +47,10 @@ small{color:#aaa}
 
 <label>YouTube / Twitch / Kick URL</label>
 <input id="url" type="url"
-placeholder="Paste your video link">
+placeholder="YouTube link processing coming soon">
 
 <label>Or upload your video</label>
-<input id="video" type="file"
-accept="video/*">
+<input id="video" type="file" accept="video/mp4,video/quicktime,video/x-matroska,video/webm">
 
 <label>Clip duration</label>
 <select id="duration">
@@ -70,36 +72,102 @@ accept="video/*">
 <option>OFF</option>
 </select>
 
-<button onclick="createClips()">
+<button id="make" onclick="createClips()">
 ⚡ MAKE CLIPS
 </button>
-<p id="status"></p>
+
+<p id="status">Checking backend connection...</p>
 </div>
 
 <div class="card">
 <h2>📁 My Clips</h2>
-<p>Your exported clips will appear here
-after the processing backend is connected.</p>
+<p id="result">Your exported clips will appear here.</p>
 </div>
 
 <small>NeonClipping Web Edition</small>
 </div>
 
 <script>
-function createClips(){
- const url=document.getElementById('url').value;
- const video=document.getElementById('video').files[0];
- const status=document.getElementById('status');
+const API = "https://neonclipping-backend.onrender.com";
 
- if(!url && !video){
-  status.textContent="Please enter a video link or select a video.";
+async function checkBackend(){
+ const status = document.getElementById("status");
+ try{
+  const response = await fetch(API + "/", {
+   method:"GET"
+  });
+  if(!response.ok) throw new Error("Backend unavailable");
+  status.textContent = "✅ Backend connected!";
+ }catch(error){
+  status.textContent = "❌ Backend connection failed. Please try again.";
+ }
+}
+
+async function createClips(){
+ const url = document.getElementById("url").value.trim();
+ const video = document.getElementById("video").files[0];
+ const status = document.getElementById("status");
+ const result = document.getElementById("result");
+ const button = document.getElementById("make");
+
+ if(!video){
+  status.textContent = url
+   ? "YouTube link processing is not available yet. Please upload a video."
+   : "Please select a video first.";
   return;
  }
 
- status.textContent=
- "Website interface ready. Video processing backend is not connected yet.";
+ if(video.size > 100 * 1024 * 1024){
+  status.textContent = "Video must be under 100 MB.";
+  return;
+ }
+
+ button.disabled = true;
+ status.textContent = "⏳ Uploading and processing video...";
+ result.textContent = "Please wait...";
+
+ try{
+  const formData = new FormData();
+  formData.append("file", video);
+
+  const response = await fetch(API + "/process", {
+   method:"POST",
+   body:formData
+  });
+
+  if(!response.ok){
+   let message = "Video processing failed.";
+   try{
+    const error = await response.json();
+    message = error.detail || message;
+   }catch(e){}
+   throw new Error(message);
+  }
+
+  const blob = await response.blob();
+  const downloadUrl = URL.createObjectURL(blob);
+  const link = document.createElement("a");
+
+  link.href = downloadUrl;
+  link.download = "neonclipping_clips.zip";
+  document.body.appendChild(link);
+  link.click();
+  link.remove();
+
+  status.textContent = "✅ Video processing completed!";
+  result.textContent = "Your ZIP download has started.";
+
+  setTimeout(() => URL.revokeObjectURL(downloadUrl), 60000);
+
+ }catch(error){
+  status.textContent = "❌ " + error.message;
+  result.textContent = "Please try again.";
+ }finally{
+  button.disabled = false;
+ }
 }
+
+checkBackend();
 </script>
 </body>
 </html>
-
