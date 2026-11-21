@@ -3,42 +3,72 @@
 <html lang="en">
 <head>
 <meta charset="UTF-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>NeonClipping</title>
 <style>
 *{box-sizing:border-box}
-body{margin:0;background:#0b0d17;color:white;font-family:Arial,sans-serif;padding:20px}
+body{margin:0;background:#0b0d17;color:white;font-family:Arial,sans-serif;padding:25px 15px}
 .container{max-width:650px;margin:auto}
-h1{color:#a78bfa;font-size:27px}
-p{color:#aaa}
-.card{background:#171a2b;padding:20px;border:1px solid #30334a;border-radius:15px;margin:18px 0}
-label{display:block;margin:15px 0 8px}
-input{width:100%;padding:13px;border-radius:9px;background:#252940;color:white;border:1px solid #454968}
-button{width:100%;padding:15px;margin-top:20px;border:0;border-radius:10px;background:#8055ed;color:white;font-size:16px;font-weight:bold}
+header{text-align:center;margin-bottom:25px}
+header h1{color:#a78bfa;font-size:30px}
+header p{color:#aaa}
+.card{background:#171a2b;padding:22px;border-radius:16px;margin:18px 0}
+h2{margin-top:0}
+label{display:block;margin:15px 0 8px;color:#ddd}
+input,select{width:100%;padding:13px;border-radius:9px;border:1px solid #393c52;background:#0b0d17;color:white}
+button{width:100%;padding:15px;border:0;border-radius:10px;background:#8055ed;color:white;font-size:16px;font-weight:bold;margin-top:18px}
 button:disabled{opacity:.5}
-.progress-bg{width:100%;height:15px;background:#30334a;border-radius:20px;overflow:hidden;margin-top:15px}
-#progressBar{height:100%;width:0%;background:#a78bfa;transition:width .25s}
-#percent{font-size:25px;color:#a78bfa;font-weight:bold;margin-top:12px}
-#status{overflow-wrap:anywhere}
+.small{color:#aaa;font-size:13px}
+#progressBox{display:none;margin-top:20px}
+.track{height:13px;background:#303247;border-radius:20px;overflow:hidden}
+#bar{height:100%;width:0%;background:#a78bfa;transition:width .3s}
+#percent{text-align:center;font-size:25px;color:#c4b5fd;margin:12px}
+#status{text-align:center;color:#ddd}
 </style>
 </head>
 <body>
 <div class="container">
+<header>
 <h1>⚡ NEON CLIPPING</h1>
 <p>Create your next viral Shorts!</p>
+</header>
 
 <div class="card">
 <h2>🎬 Create Clips</h2>
 
-<label>Upload your video</label>
+<label>YouTube / Twitch / Kick URL</label>
+<input id="videoUrl" type="url" placeholder="Paste video link here">
+<p class="small">URL processing is coming soon. Upload a video to create clips.</p>
+
+<label>📁 Upload Video</label>
 <input id="video" type="file" accept="video/*">
+<p class="small">Maximum upload size: 100 MB</p>
 
-<button id="make" onclick="createClips()">⚡ MAKE CLIPS</button>
+<label>Clip Duration</label>
+<select id="duration">
+<option value="20-30">20–30 seconds</option>
+<option value="30-45">30–45 seconds</option>
+<option value="45-60">45–60 seconds</option>
+</select>
 
-<div id="progressArea" style="display:none">
-<div class="progress-bg">
-<div id="progressBar"></div>
-</div>
+<label>Video Format</label>
+<select id="format">
+<option value="9:16">9:16 Shorts / Reels</option>
+<option value="16:9">16:9 Landscape</option>
+<option value="1:1">1:1 Square</option>
+</select>
+
+<label>Captions</label>
+<select id="captions">
+<option value="on">ON</option>
+<option value="off">OFF</option>
+</select>
+
+<button id="make" onclick="makeClips()">⚡ MAKE CLIPS</button>
+
+<div id="progressBox">
+<h3>Processing Preview</h3>
+<div class="track"><div id="bar"></div></div>
 <div id="percent">0%</div>
 <p id="status">Waiting...</p>
 </div>
@@ -46,148 +76,94 @@ button:disabled{opacity:.5}
 
 <div class="card">
 <h2>📁 My Clips</h2>
-<p id="result">Your exported clips will appear here.</p>
+<p id="result" class="small">Your completed clips will appear here.</p>
 </div>
-
+<p class="small" style="text-align:center">⚡ Powered by NeonClipping</p>
 </div>
 
 <script>
-const API = "https://neonclipping-backend.onrender.com";
+const API="https://neonclipping-backend.onrender.com";
 
-const button = document.getElementById("make");
-const videoInput = document.getElementById("video");
-const progressArea = document.getElementById("progressArea");
-const progressBar = document.getElementById("progressBar");
-const percentText = document.getElementById("percent");
-const statusText = document.getElementById("status");
-const resultText = document.getElementById("result");
+async function makeClips(){
+ const file=document.getElementById("video").files[0];
+ const btn=document.getElementById("make");
+ const box=document.getElementById("progressBox");
+ const result=document.getElementById("result");
 
-function showProgress(value, message) {
-  const percent = Math.max(0, Math.min(100, Math.round(value)));
-  progressBar.style.width = percent + "%";
-  percentText.textContent = percent + "%";
-  statusText.textContent = message;
-}
+ if(!file){alert("Please upload a video first.");return;}
+ if(file.size>100*1024*1024){alert("Video must be under 100 MB.");return;}
 
-function uploadVideo(file) {
-  return new Promise((resolve, reject) => {
-    const formData = new FormData();
-    formData.append("file", file);
+ btn.disabled=true;
+ box.style.display="block";
+ result.textContent="Processing...";
+ setProgress(0,"Uploading video...");
 
-    const xhr = new XMLHttpRequest();
-    xhr.open("POST", API + "/process");
+ const data=new FormData();
+ data.append("file",file);
 
-    xhr.upload.onprogress = (event) => {
-      if (event.lengthComputable) {
-        const value = (event.loaded / event.total) * 100;
-        showProgress(value, "Uploading video...");
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        try {
-          resolve(JSON.parse(xhr.responseText));
-        } catch {
-          reject(new Error("Invalid server response."));
-        }
-      } else {
-        reject(new Error("Upload failed: " + xhr.responseText));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error("Network connection failed."));
-    xhr.send(formData);
+ try{
+  const job=await new Promise((resolve,reject)=>{
+   const xhr=new XMLHttpRequest();
+   xhr.open("POST",API+"/process");
+   xhr.upload.onprogress=e=>{
+    if(e.lengthComputable){
+     setProgress(Math.round(e.loaded/e.total*10),"Uploading video...");
+    }
+   };
+   xhr.onload=()=>{
+    if(xhr.status>=200&&xhr.status<300){
+     try{resolve(JSON.parse(xhr.responseText));}
+     catch(e){reject(new Error("Invalid server response"));}
+    }else reject(new Error("Upload failed: "+xhr.status));
+   };
+   xhr.onerror=()=>reject(new Error("Network error"));
+   xhr.send(data);
   });
+
+  if(!job.job_id)throw new Error("Job ID missing");
+  await monitorJob(job.job_id);
+ }catch(e){
+  setProgress(0,"❌ "+e.message);
+  result.textContent="Processing failed. Please check server logs.";
+ }finally{
+  btn.disabled=false;
+ }
 }
 
-async function checkProgress(jobId) {
-  while (true) {
-    const response = await fetch(API + "/progress/" + jobId);
-
-    if (!response.ok) {
-      throw new Error("Could not check processing progress.");
-    }
-
-    const data = await response.json();
-
-    showProgress(data.progress, data.status);
-
-    if (data.state === "completed") {
-      return;
-    }
-
-    if (data.state === "failed") {
-      throw new Error(data.error || "Video processing failed.");
-    }
-
-    await new Promise(resolve => setTimeout(resolve, 1500));
-  }
+function setProgress(value,message){
+ document.getElementById("bar").style.width=value+"%";
+ document.getElementById("percent").textContent=value+"%";
+ document.getElementById("status").textContent=message;
 }
 
-async function downloadClips(jobId) {
-  statusText.textContent = "Downloading your clips...";
+async function monitorJob(id){
+ const result=document.getElementById("result");
+ while(true){
+  const response=await fetch(API+"/progress/"+id);
+  if(!response.ok)throw new Error("Progress check failed");
+  const data=await response.json();
+  setProgress(data.progress||0,data.status||"Processing...");
 
-  const response = await fetch(API + "/download/" + jobId);
-
-  if (!response.ok) {
-    throw new Error("Download failed.");
+  if(data.state==="completed"||data.status==="completed"){
+   setProgress(100,"✅ Clips ready!");
+   const download=await fetch(API+"/download/"+id);
+   if(!download.ok)throw new Error("Download not ready");
+   const blob=await download.blob();
+   const url=URL.createObjectURL(blob);
+   const a=document.createElement("a");
+   a.href=url;
+   a.download="neonclipping_clips.zip";
+   a.click();
+   URL.revokeObjectURL(url);
+   result.textContent="✅ Your clips ZIP has been downloaded.";
+   return;
   }
 
-  const blob = await response.blob();
-  const downloadUrl = URL.createObjectURL(blob);
-
-  const link = document.createElement("a");
-  link.href = downloadUrl;
-  link.download = "neonclipping_clips.zip";
-  document.body.appendChild(link);
-  link.click();
-  link.remove();
-
-  setTimeout(() => URL.revokeObjectURL(downloadUrl), 60000);
-}
-
-async function createClips() {
-  const file = videoInput.files[0];
-
-  if (!file) {
-    alert("Please select a video first.");
-    return;
+  if(data.state==="failed"||data.error){
+   throw new Error(data.error||"Processing failed");
   }
-
-  if (file.size > 100 * 1024 * 1024) {
-    alert("Video must be under 100 MB.");
-    return;
-  }
-
-  button.disabled = true;
-  progressArea.style.display = "block";
-  resultText.textContent = "Processing your video...";
-
-  try {
-    showProgress(0, "Starting upload...");
-
-    const uploadResult = await uploadVideo(file);
-
-    if (!uploadResult.job_id) {
-      throw new Error("Server did not return a job ID.");
-    }
-
-    showProgress(0, "Upload complete. Processing started...");
-
-    await checkProgress(uploadResult.job_id);
-
-    await downloadClips(uploadResult.job_id);
-
-    showProgress(100, "✅ Processing completed!");
-    resultText.textContent = "Your ZIP download has started.";
-
-  } catch (error) {
-    statusText.textContent = "❌ " + error.message;
-    resultText.textContent = "Please try again.";
-  } finally {
-    button.disabled = false;
-  }
+  await new Promise(resolve=>setTimeout(resolve,1500));
+ }
 }
 </script>
 </body>
