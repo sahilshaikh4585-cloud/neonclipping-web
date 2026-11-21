@@ -6,11 +6,23 @@ import tempfile
 import zipfile
 from pathlib import Path
 
+import uvicorn
 from fastapi import FastAPI, File, HTTPException, UploadFile
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
+from fastapi.middleware.cors import CORSMiddleware
 
 app = FastAPI(title="NeonClipping Backend")
+
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=[
+        "https://sahilshaikh4585-cloud.github.io"
+    ],
+    allow_credentials=False,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
 
 MAX_SIZE = 100 * 1024 * 1024
 ALLOWED = {".mp4", ".mov", ".mkv", ".webm"}
@@ -42,7 +54,9 @@ async def process_video(file: UploadFile = File(...)):
                     break
                 size += len(chunk)
                 if size > MAX_SIZE:
-                    raise HTTPException(413, "Video must be under 100 MB")
+                    raise HTTPException(
+                        413, "Video must be under 100 MB"
+                    )
                 out.write(chunk)
 
         await file.close()
@@ -63,10 +77,12 @@ async def process_video(file: UploadFile = File(...)):
         )
 
         clips = list(Path(output_dir).glob("*.mp4"))
+
         if result.returncode != 0 or not clips:
             raise HTTPException(500, "Video processing failed")
 
         zip_path = os.path.join(folder, "neonclipping_clips.zip")
+
         with zipfile.ZipFile(zip_path, "w") as archive:
             for clip in clips:
                 archive.write(clip, arcname=clip.name)
@@ -86,13 +102,10 @@ async def process_video(file: UploadFile = File(...)):
     except Exception:
         shutil.rmtree(folder, ignore_errors=True)
         raise HTTPException(500, "Processing error")
-      
-fastapi.middleware.corsapp.add_middleware(
-    CORSMiddleware,
-    allow_origins=[
-        "https://sahilshaikh4585-cloud.github.io"
-    ],
-    allow_credentials=False,
-    allow_methods=["*"],
-    allow_headers=["*"],
-        )
+
+
+if __name__ == "__main__":
+    port = int(os.environ.get("PORT", 10000))
+    uvicorn.run(app, host="0.0.0.0", port=port)
+    
+
