@@ -4,11 +4,11 @@ import uuid
 import shutil
 import zipfile
 import tempfile
-import subprocess
 import threading
+import subprocess
 from pathlib import Path
 
-from fastapi import FastAPI, UploadFile, File, BackgroundTasks, HTTPException
+from fastapi import FastAPI, UploadFile, File, Form, BackgroundTasks, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from faster_whisper import WhisperModel
@@ -98,8 +98,22 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
     Path(output).write_text("".join(lines), encoding="utf-8")
 
 
-def run_ffmpeg(command, job_id, base, duration, label):
-    command += ["-progress", "pipe:1", "-nostats"]
+def get_video_filter(video_format, captions, ass_path):
+    if video_format == "9:16":
+        filters = "scale=1080:1920:force_original_aspect_ratio=increase,crop=1080:1920"
+    elif video_format == "16:9":
+        filters = "scale=1920:1080:force_original_aspect_ratio=increase,crop=1920:1080"
+    else:
+        filters = "scale=1080:1080:force_original_aspect_ratio=increase,crop=1080:1080"
+
+    if captions:
+        filters += f",ass={ass_path}"
+
+    return filters
+
+
+def run_ffmpeg(command, job_id, base, span, duration, label):
+    command += ["-progress", "pipe:1", "-nostats", "-loglevel", "error"]
 
     process = subprocess.Popen(
         command,
@@ -114,7 +128,7 @@ def run_ffmpeg(command, job_id, base, duration, label):
             try:
                 current = int(line.split("=")[1]) / 1_000_000
                 percent = min(1, current / max(duration, 0.1))
-                progress = int(base + percent * 35)
+                progress = min(89, int(base + percent * span))
                 update_job(job_id, progress=progress, status=label)
             except (ValueError, ZeroDivisionError):
                 pass
@@ -126,15 +140,43 @@ def run_ffmpeg(command, job_id, base, duration, label):
         raise RuntimeError(error[-1500:] or "FFmpeg processing failed")
 
 
-def process_job(job_id, input_path, work_dir):
+def process_job(job_id, input_path, work_dir, clip_length, video_format, captions, video_url):
     try:
+        if video_url:
+            update_job(job_id, progress=2, status="Downloading video")
+            downloaded = os.path.join(work_dir, "source.%(ext)s")
+
+            command = [
+                "yt-dlp",
+                "--no-playlist",
+                "-f", "bestvideo[height<=1080]+bestaudio/best[height<=1080]/best",
+                "--merge-output-format", "mp4",
+                "-o", downloaded,
+                video_url
+            ]
+
+            result = subprocess.run(
+                command, capture_output=True, text=True
+            )
+
+            if result.returncode != 0:
+                raise RuntimeError("Video download failed: " + result.stderr[-1000:])
+
+            candidates = list(Path(work_dir).glob("source.*"))
+            candidates = [p for p in candidates if p.is_file()]
+
+            if not candidates:
+                raise RuntimeError("Downloaded video file not found")
+
+            input_path = str(candidates[0])
+
         duration = get_duration(input_path)
         if duration <= 0:
             raise RuntimeError("Could not read video duration")
 
         audio_path = os.path.join(work_dir, "audio.wav")
 
-        update_job(job_id, progress=3, status="Extracting audio")
+        update_job(job_id, progress=5, status="Extracting audio")
 
         subprocess.run(
             [
@@ -145,33 +187,34 @@ def process_job(job_id, input_path, work_dir):
             capture_output=True, check=True
         )
 
-        update_job(job_id, progress=10, status="Detecting speech")
-
-        whisper = get_model()
-        segments_generator, info = whisper.transcribe(
-            audio_path,
-            word_timestamps=True,
-            vad_filter=False,
-            condition_on_previous_text=False
-        )
-
         segments = []
-        for segment in segments_generator:
-            segments.append(segment)
-            percent = min(1, segment.end / max(duration, 0.1))
-            update_job(
-                job_id,
-                progress=int(10 + percent * 40),
-                status="Transcribing speech"
+
+        if captions:
+            update_job(job_id, progress=10, status="Detecting speech")
+            whisper = get_model()
+
+            segments_generator, info = whisper.transcribe(
+                audio_path,
+                word_timestamps=True,
+                vad_filter=False,
+                condition_on_previous_text=False
             )
 
-        if not segments:
-            raise RuntimeError("No speech detected in video")
+            for segment in segments_generator:
+                segments.append(segment)
+                percent = min(1, segment.end / max(duration, 0.1))
+                update_job(
+                    job_id,
+                    progress=int(10 + percent * 40),
+                    status="Transcribing speech"
+                )
+
+            if not segments:
+                raise RuntimeError("No speech detected in video")
 
         clips_dir = os.path.join(work_dir, "clips")
         os.makedirs(clips_dir, exist_ok=True)
 
-        clip_length = 30
         total_clips = int((duration + clip_length - 1) // clip_length)
 
         for index in range(total_clips):
@@ -180,16 +223,19 @@ def process_job(job_id, input_path, work_dir):
             length = end - start
 
             ass_path = os.path.join(work_dir, f"captions_{index}.ass")
-            make_ass(segments, start, end, ass_path)
+
+            if captions:
+                make_ass(segments, start, end, ass_path)
 
             output_path = os.path.join(
                 clips_dir, f"neon_clip_{index + 1}.mp4"
             )
 
-            update_job(
-                job_id,
-                status=f"Rendering clip {index + 1} of {total_clips}"
-            )
+            label = f"Rendering clip {index + 1} of {total_clips}"
+            update_job(job_id, status=label)
+
+            base = 50 + (index / total_clips) * 35
+            span = 35 / total_clips
 
             run_ffmpeg(
                 [
@@ -197,17 +243,14 @@ def process_job(job_id, input_path, work_dir):
                     "-ss", str(start),
                     "-i", input_path,
                     "-t", str(length),
-                    "-vf", f"ass={ass_path}",
+                    "-vf", get_video_filter(video_format, captions, ass_path),
                     "-c:v", "libx264",
                     "-preset", "ultrafast",
                     "-c:a", "aac",
                     "-movflags", "+faststart",
                     output_path
                 ],
-                job_id,
-                50 + (index / total_clips) * 35,
-                length,
-                f"Rendering clip {index + 1} of {total_clips}"
+                job_id, base, span, length, label
             )
 
         update_job(job_id, progress=90, status="Creating ZIP file")
@@ -253,32 +296,75 @@ def home():
 @app.post("/process")
 async def process_video(
     background_tasks: BackgroundTasks,
-    file: UploadFile = File(...)
+    file: UploadFile = File(None),
+    video_url: str = Form(None),
+    clip_duration: str = Form("30"),
+    video_format: str = Form("9:16"),
+    captions: str = Form("on")
 ):
-    job_id = str(uuid.uuid4())
-    work_dir = tempfile.mkdtemp(prefix="neon_")
-    input_path = os.path.join(work_dir, "input_video")
+    if not file and not video_url:
+        raise HTTPException(status_code=400, detail="Upload a video or enter a video URL")
+
+    if file and video_url:
+        raise HTTPException(status_code=400, detail="Use either upload or URL, not both")
+
+    if video_url and not video_url.startswith(("https://", "http://")):
+        raise HTTPException(status_code=400, detail="Invalid video URL")
 
     try:
-        with open(input_path, "wb") as output:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
-                output.write(chunk)
-    except Exception:
-        shutil.rmtree(work_dir, ignore_errors=True)
-        raise HTTPException(status_code=400, detail="Upload failed")
+        clip_length = int(clip_duration)
+    except ValueError:
+        raise HTTPException(status_code=400, detail="Invalid clip duration")
 
-    jobs[job_id] = {
-        "progress": 0,
-        "status": "Video uploaded",
-        "state": "processing",
-        "error": None,
-        "download": None
-    }
+    if clip_length not in (30, 45, 60):
+        raise HTTPException(status_code=400, detail="Choose 30, 45 or 60 seconds")
 
-    background_tasks.add_task(process_job, job_id, input_path, work_dir)
+    if video_format not in ("9:16", "16:9", "1:1"):
+        raise HTTPException(status_code=400, detail="Invalid video format")
+
+    captions_enabled = captions.lower() in ("on", "true", "yes", "1")
+
+    job_id = str(uuid.uuid4())
+    work_dir = tempfile.mkdtemp(prefix="neon_")
+    input_path = None
+
+    if file:
+        input_path = os.path.join(work_dir, "input_video")
+
+        try:
+            size = 0
+            with open(input_path, "wb") as output:
+                while True:
+                    chunk = await file.read(1024 * 1024)
+                    if not chunk:
+                        break
+                    size += len(chunk)
+                    if size > 100 * 1024 * 1024:
+                        raise HTTPException(status_code=413, detail="Video must be under 100 MB")
+                    output.write(chunk)
+        except Exception:
+            shutil.rmtree(work_dir, ignore_errors=True)
+            raise
+
+    with lock:
+        jobs[job_id] = {
+            "progress": 0,
+            "status": "Video uploaded",
+            "state": "processing",
+            "error": None,
+            "download": None
+        }
+
+    background_tasks.add_task(
+        process_job,
+        job_id,
+        input_path,
+        work_dir,
+        clip_length,
+        video_format,
+        captions_enabled,
+        video_url
+    )
 
     return {"job_id": job_id}
 
@@ -314,5 +400,5 @@ def download_result(job_id: str):
         job["download"],
         filename="neonclipping_clips.zip",
         media_type="application/zip"
-        )
+            )
     
