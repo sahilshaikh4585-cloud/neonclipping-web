@@ -29,7 +29,7 @@ def get_model():
     global model
     if model is None:
         model = WhisperModel(
-            "tiny",
+            "small",
             device="cpu",
             compute_type="int8"
         )
@@ -66,7 +66,6 @@ def make_captions(audio_path, ass_path):
         condition_on_previous_text=False
     )
 
-    segments = list(segments)
     words = []
 
     for segment in segments:
@@ -76,9 +75,7 @@ def make_captions(audio_path, ass_path):
                     words.append(word)
 
     if not words:
-        raise RuntimeError(
-            "Voice detect nahi hui. Clear voice wali video se dobara try karein."
-        )
+        raise RuntimeError("No clear speech detected.")
 
     header = """[Script Info]
 ScriptType: v4.00+
@@ -88,7 +85,7 @@ WrapStyle: 2
 
 [V4+ Styles]
 Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,62,&H0000FFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,180,1
+Style: Default,Arial,68,&H0000FFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,5,60,60,0,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
@@ -96,17 +93,15 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
 
     lines = [header]
 
-    for i in range(0, len(words), 6):
-        group = words[i:i + 6]
+    for i in range(0, len(words), 5):
+        group = words[i:i + 5]
         start = group[0].start
         end = max(group[-1].end, start + 0.3)
 
         caption = ""
+
         for word in group:
-            duration = max(
-                1,
-                int((word.end - word.start) * 100)
-            )
+            duration = max(1, int((word.end - word.start) * 100))
             safe_word = (
                 word.word.replace("{", "(")
                 .replace("}", ")")
@@ -120,7 +115,6 @@ Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
         )
 
     ass_path.write_text("".join(lines), encoding="utf-8")
-    return info.language
 
 
 @app.get("/")
@@ -154,7 +148,7 @@ async def process_video(file: UploadFile = File(...)):
             str(audio_path)
         ])
 
-        language = make_captions(audio_path, caption_path)
+        make_captions(audio_path, caption_path)
 
         run_ffmpeg([
             "ffmpeg", "-y",
@@ -179,11 +173,12 @@ async def process_video(file: UploadFile = File(...)):
             str(output_dir / "clip_%03d.mp4")
         ])
 
-        zip_path = workdir / "NeonClipping_Clips.zip"
-
         clips = list(output_dir.glob("*.mp4"))
+
         if not clips:
-            raise RuntimeError("FFmpeg could not create video clips.")
+            raise RuntimeError("No clips generated.")
+
+        zip_path = workdir / "NeonClipping_Clips.zip"
 
         with zipfile.ZipFile(zip_path, "w") as archive:
             for clip in clips:
@@ -201,9 +196,11 @@ async def process_video(file: UploadFile = File(...)):
     except HTTPException:
         shutil.rmtree(workdir, ignore_errors=True)
         raise
+
     except Exception as e:
         shutil.rmtree(workdir, ignore_errors=True)
         raise HTTPException(status_code=500, detail=str(e))
+
     finally:
         await file.close()
 
