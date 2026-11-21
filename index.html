@@ -13,7 +13,6 @@ header{text-align:center;margin-bottom:25px}
 header h1{color:#a78bfa;font-size:30px}
 header p{color:#aaa}
 .card{background:#171a2b;padding:22px;border-radius:16px;margin:18px 0}
-h2{margin-top:0}
 label{display:block;margin:15px 0 8px;color:#ddd}
 input,select{width:100%;padding:13px;border-radius:9px;border:1px solid #393c52;background:#0b0d17;color:white}
 button{width:100%;padding:15px;border:0;border-radius:10px;background:#8055ed;color:white;font-size:16px;font-weight:bold;margin-top:18px}
@@ -23,7 +22,7 @@ button:disabled{opacity:.5}
 .track{height:13px;background:#303247;border-radius:20px;overflow:hidden}
 #bar{height:100%;width:0%;background:#a78bfa;transition:width .3s}
 #percent{text-align:center;font-size:25px;color:#c4b5fd;margin:12px}
-#status{text-align:center;color:#ddd}
+#status{text-align:center;color:#ddd;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -36,19 +35,19 @@ button:disabled{opacity:.5}
 <div class="card">
 <h2>🎬 Create Clips</h2>
 
-<label>YouTube / Twitch / Kick URL</label>
+<label>YouTube Video URL</label>
 <input id="videoUrl" type="url" placeholder="Paste video link here">
-<p class="small">URL processing is coming soon. Upload a video to create clips.</p>
+<p class="small">Use a video you own or have permission to process.</p>
 
-<label>📁 Upload Video</label>
+<label>📁 Or Upload Video</label>
 <input id="video" type="file" accept="video/*">
 <p class="small">Maximum upload size: 100 MB</p>
 
 <label>Clip Duration</label>
 <select id="duration">
-<option value="20-30">20–30 seconds</option>
-<option value="30-45">30–45 seconds</option>
-<option value="45-60">45–60 seconds</option>
+<option value="30">30 seconds</option>
+<option value="45">45 seconds</option>
+<option value="60">60 seconds</option>
 </select>
 
 <label>Video Format</label>
@@ -60,14 +59,14 @@ button:disabled{opacity:.5}
 
 <label>Captions</label>
 <select id="captions">
-<option value="on">ON</option>
-<option value="off">OFF</option>
+<option value="on">Captions ON</option>
+<option value="off">Captions OFF</option>
 </select>
 
 <button id="make" onclick="makeClips()">⚡ MAKE CLIPS</button>
 
 <div id="progressBox">
-<h3>Processing Preview</h3>
+<h3>Processing Progress</h3>
 <div class="track"><div id="bar"></div></div>
 <div id="percent">0%</div>
 <p id="status">Waiting...</p>
@@ -84,84 +83,130 @@ button:disabled{opacity:.5}
 <script>
 const API="https://neonclipping-backend.onrender.com";
 
+function setProgress(value,message){
+ const safe=Math.max(0,Math.min(100,Number(value)||0));
+ document.getElementById("bar").style.width=safe+"%";
+ document.getElementById("percent").textContent=safe+"%";
+ document.getElementById("status").textContent=message;
+}
+
 async function makeClips(){
  const file=document.getElementById("video").files[0];
+ const videoUrl=document.getElementById("videoUrl").value.trim();
  const btn=document.getElementById("make");
  const box=document.getElementById("progressBox");
  const result=document.getElementById("result");
 
- if(!file){alert("Please upload a video first.");return;}
- if(file.size>100*1024*1024){alert("Video must be under 100 MB.");return;}
+ if(!file&&!videoUrl){
+  alert("Upload a video or enter a video URL.");
+  return;
+ }
+ if(file&&videoUrl){
+  alert("Use either a video upload or a URL, not both.");
+  return;
+ }
+ if(file&&file.size>100*1024*1024){
+  alert("Video must be under 100 MB.");
+  return;
+ }
 
  btn.disabled=true;
  box.style.display="block";
  result.textContent="Processing...";
- setProgress(0,"Uploading video...");
+ setProgress(0,"Preparing video...");
 
  const data=new FormData();
- data.append("file",file);
+
+ if(file){
+  data.append("file",file);
+ }else{
+  data.append("video_url",videoUrl);
+ }
+
+ data.append("clip_duration",document.getElementById("duration").value);
+ data.append("video_format",document.getElementById("format").value);
+ data.append("captions",document.getElementById("captions").value);
 
  try{
   const job=await new Promise((resolve,reject)=>{
    const xhr=new XMLHttpRequest();
    xhr.open("POST",API+"/process");
+
    xhr.upload.onprogress=e=>{
     if(e.lengthComputable){
-     setProgress(Math.round(e.loaded/e.total*10),"Uploading video...");
+     const percent=Math.round((e.loaded/e.total)*4);
+     setProgress(percent,"Uploading video...");
     }
    };
+
    xhr.onload=()=>{
     if(xhr.status>=200&&xhr.status<300){
      try{resolve(JSON.parse(xhr.responseText));}
      catch(e){reject(new Error("Invalid server response"));}
-    }else reject(new Error("Upload failed: "+xhr.status));
+    }else{
+     let message="Request failed: "+xhr.status;
+     try{
+      const body=JSON.parse(xhr.responseText);
+      message=body.detail||message;
+     }catch(e){}
+     reject(new Error(message));
+    }
    };
+
    xhr.onerror=()=>reject(new Error("Network error"));
    xhr.send(data);
   });
 
   if(!job.job_id)throw new Error("Job ID missing");
   await monitorJob(job.job_id);
+
  }catch(e){
   setProgress(0,"❌ "+e.message);
-  result.textContent="Processing failed. Please check server logs.";
+  result.textContent="Processing failed: "+e.message;
  }finally{
   btn.disabled=false;
  }
 }
 
-function setProgress(value,message){
- document.getElementById("bar").style.width=value+"%";
- document.getElementById("percent").textContent=value+"%";
- document.getElementById("status").textContent=message;
-}
-
 async function monitorJob(id){
  const result=document.getElementById("result");
+
  while(true){
   const response=await fetch(API+"/progress/"+id);
-  if(!response.ok)throw new Error("Progress check failed");
-  const data=await response.json();
-  setProgress(data.progress||0,data.status||"Processing...");
 
-  if(data.state==="completed"||data.status==="completed"){
-   setProgress(100,"✅ Clips ready!");
+  if(!response.ok){
+   throw new Error("Could not check processing progress");
+  }
+
+  const data=await response.json();
+  setProgress(data.progress,data.status||"Processing...");
+
+  if(data.state==="failed"){
+   throw new Error(data.error||"Processing failed");
+  }
+
+  if(data.state==="completed"){
+   setProgress(100,"✅ Clips ready! Downloading...");
+
    const download=await fetch(API+"/download/"+id);
    if(!download.ok)throw new Error("Download not ready");
+
    const blob=await download.blob();
    const url=URL.createObjectURL(blob);
    const a=document.createElement("a");
    a.href=url;
    a.download="neonclipping_clips.zip";
+   document.body.appendChild(a);
    a.click();
-   URL.revokeObjectURL(url);
+   a.remove();
+
+   setTimeout(()=>URL.revokeObjectURL(url),5000);
+
    result.textContent="✅ Your clips ZIP has been downloaded.";
+   setProgress(100,"Completed!");
    return;
   }
 
-  if(data.state==="failed"||data.error){
-   throw new Error(data.error||"Processing failed");
-  }
   await new Promise(resolve=>setTimeout(resolve,1500));
  }
 }
