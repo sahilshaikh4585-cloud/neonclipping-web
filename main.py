@@ -1,31 +1,29 @@
 
 import os
 import shutil
+import zipfile
 import subprocess
 import tempfile
-import zipfile
 from pathlib import Path
 
-import uvicorn
-from faster_whisper import WhisperModel
-from fastapi import FastAPI, File, HTTPException, UploadFile
+from fastapi import FastAPI, UploadFile, File, HTTPException
+from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import FileResponse
 from starlette.background import BackgroundTask
-from fastapi.middleware.cors import CORSMiddleware
+from faster_whisper import WhisperModel
 
-app = FastAPI(title="NeonClipping Backend")
+app = FastAPI()
 
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
+    allow_credentials=False,
     allow_methods=["*"],
     allow_headers=["*"],
 )
 
-MAX_SIZE = 100 * 1024 * 1024
-ALLOWED = {".mp4", ".mov", ".mkv", ".webm"}
-
 model = None
+
 
 def get_model():
     global model
@@ -38,6 +36,18 @@ def get_model():
     return model
 
 
+def run_ffmpeg(command):
+    result = subprocess.run(
+        command,
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True
+    )
+    if result.returncode != 0:
+        raise RuntimeError(result.stderr[-2500:])
+    return result
+
+
 def ass_time(seconds):
     hours = int(seconds // 3600)
     minutes = int((seconds % 3600) // 60)
@@ -45,195 +55,161 @@ def ass_time(seconds):
     return f"{hours}:{minutes:02d}:{secs:05.2f}"
 
 
-def make_captions(video_path, ass_path):
+def make_captions(audio_path, ass_path):
     whisper = get_model()
 
     segments, info = whisper.transcribe(
-        video_path,
+        str(audio_path),
+        beam_size=1,
         word_timestamps=True,
-        vad_filter=True
+        vad_filter=False,
+        condition_on_previous_text=False
     )
 
-    highlighted = {
-        "wow", "wait", "no", "yes", "crazy",
-        "insane", "amazing", "never", "secret",
-        "win", "winner", "stop", "what"
-    }
-
-    events = []
+    segments = list(segments)
+    words = []
 
     for segment in segments:
-        words = list(segment.words or [])
-        if not words:
-            continue
+        if segment.words:
+            for word in segment.words:
+                if word.word.strip():
+                    words.append(word)
 
-        caption_parts = []
+    if not words:
+        raise RuntimeError(
+            "Voice detect nahi hui. Clear voice wali video se dobara try karein."
+        )
 
-        for word in words:
-            text = word.word.strip()
-            if not text:
-                continue
-
-            text = (
-                text.replace("\\", "\\\\")
-                .replace("{", "(")
-                .replace("}", ")")
-            )
-
-            duration = max(
-                1,
-                round((word.end - word.start) * 100)
-            )
-
-            if text.lower().strip(".,!?") in highlighted:
-                part = (
-                    r"{\c&H0000FFFF&\kf" +
-                    str(duration) + "}" +
-                    text +
-                    r"{\c&H00FFFFFF&}"
-                )
-            else:
-                part = r"{\kf" + str(duration) + "}" + text
-
-            caption_parts.append(part)
-
-        if caption_parts:
-            dialogue = (
-                f"Dialogue: 0,"
-                f"{ass_time(segment.start)},"
-                f"{ass_time(segment.end)},"
-                f"Default,,0,0,0,,"
-                + " ".join(caption_parts)
-            )
-            events.append(dialogue)
-
-    if not events:
-        raise RuntimeError("No speech detected in video")
-
-    with open(ass_path, "w", encoding="utf-8") as f:
-        f.write("""[Script Info]
-Title: NeonClipping Animated Captions
+    header = """[Script Info]
 ScriptType: v4.00+
-WrapStyle: 2
-ScaledBorderAndShadow: yes
 PlayResX: 1080
 PlayResY: 1920
+WrapStyle: 2
 
 [V4+ Styles]
-Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
-Style: Default,Arial,58,&H00FFFFFF,&H0000FFFF,&H00000000,&H80000000,-1,0,1,4,2,2,60,60,120,1
+Format: Name, Fontname, Fontsize, PrimaryColour, SecondaryColour, OutlineColour, BackColour, Bold, Italic, Underline, StrikeOut, ScaleX, ScaleY, Spacing, Angle, BorderStyle, Outline, Shadow, Alignment, MarginL, MarginR, MarginV, Encoding
+Style: Default,Arial,62,&H0000FFFF,&H00FFFFFF,&H00000000,&H80000000,-1,0,0,0,100,100,0,0,1,4,2,2,60,60,180,1
 
 [Events]
 Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text
-""")
-        for event in events:
-            f.write(event + "\n")
+"""
+
+    lines = [header]
+
+    for i in range(0, len(words), 6):
+        group = words[i:i + 6]
+        start = group[0].start
+        end = max(group[-1].end, start + 0.3)
+
+        caption = ""
+        for word in group:
+            duration = max(
+                1,
+                int((word.end - word.start) * 100)
+            )
+            safe_word = (
+                word.word.replace("{", "(")
+                .replace("}", ")")
+                .replace("\\", "")
+            )
+            caption += f"{{\\kf{duration}}}{safe_word} "
+
+        lines.append(
+            f"Dialogue: 0,{ass_time(start)},{ass_time(end)},"
+            f"Default,,0,0,0,,{caption.strip()}\n"
+        )
+
+    ass_path.write_text("".join(lines), encoding="utf-8")
+    return info.language
 
 
 @app.get("/")
 def home():
-    return {"message": "NeonClipping backend is running"}
+    return {"status": "NeonClipping backend is running"}
 
 
 @app.post("/process")
 async def process_video(file: UploadFile = File(...)):
-    ext = Path(file.filename or "").suffix.lower()
-
-    if ext not in ALLOWED:
-        raise HTTPException(400, "Unsupported video format")
-
-    folder = tempfile.mkdtemp(prefix="neon_")
-    input_path = os.path.join(folder, "input" + ext)
-    output_dir = os.path.join(folder, "clips")
-    os.makedirs(output_dir)
+    workdir = Path(tempfile.mkdtemp(prefix="neon_"))
 
     try:
-        size = 0
+        input_path = workdir / "input.mp4"
+        audio_path = workdir / "audio.wav"
+        caption_path = workdir / "captions.ass"
+        captioned_path = workdir / "captioned.mp4"
+        output_dir = workdir / "clips"
+        output_dir.mkdir()
 
-        with open(input_path, "wb") as out:
-            while True:
-                chunk = await file.read(1024 * 1024)
-                if not chunk:
-                    break
+        with input_path.open("wb") as f:
+            shutil.copyfileobj(file.file, f)
 
-                size += len(chunk)
+        if input_path.stat().st_size == 0:
+            raise HTTPException(400, "Uploaded video is empty.")
 
-                if size > MAX_SIZE:
-                    raise HTTPException(
-                        413,
-                        "Video must be under 100 MB"
-                    )
+        run_ffmpeg([
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-vn", "-ac", "1", "-ar", "16000",
+            "-c:a", "pcm_s16le",
+            str(audio_path)
+        ])
 
-                out.write(chunk)
+        language = make_captions(audio_path, caption_path)
 
-        await file.close()
+        run_ffmpeg([
+            "ffmpeg", "-y",
+            "-i", str(input_path),
+            "-vf", f"subtitles={caption_path}",
+            "-c:v", "libx264",
+            "-preset", "ultrafast",
+            "-crf", "23",
+            "-c:a", "aac",
+            "-movflags", "+faststart",
+            str(captioned_path)
+        ])
 
-        ass_path = os.path.join(folder, "captions.ass")
+        run_ffmpeg([
+            "ffmpeg", "-y",
+            "-i", str(captioned_path),
+            "-map", "0",
+            "-c", "copy",
+            "-f", "segment",
+            "-segment_time", "30",
+            "-reset_timestamps", "1",
+            str(output_dir / "clip_%03d.mp4")
+        ])
 
-        make_captions(input_path, ass_path)
+        zip_path = workdir / "NeonClipping_Clips.zip"
 
-        result = subprocess.run(
-            [
-                "ffmpeg", "-y",
-                "-i", input_path,
-                "-vf", f"subtitles={ass_path}",
-                "-map", "0:v:0",
-                "-map", "0:a?",
-                "-c:v", "libx264",
-                "-preset", "veryfast",
-                "-c:a", "aac",
-                "-f", "segment",
-                "-segment_time", "30",
-                "-reset_timestamps", "1",
-                os.path.join(output_dir, "clip_%03d.mp4")
-            ],
-            capture_output=True,
-            text=True,
-            timeout=600
-        )
-
-        clips = list(Path(output_dir).glob("*.mp4"))
-
-        if result.returncode != 0 or not clips:
-            raise HTTPException(
-                500,
-                "Caption rendering or video processing failed"
-            )
-
-        zip_path = os.path.join(
-            folder,
-            "neonclipping_clips.zip"
-        )
+        clips = list(output_dir.glob("*.mp4"))
+        if not clips:
+            raise RuntimeError("FFmpeg could not create video clips.")
 
         with zipfile.ZipFile(zip_path, "w") as archive:
             for clip in clips:
                 archive.write(clip, arcname=clip.name)
 
         return FileResponse(
-            zip_path,
-            filename="neonclipping_clips.zip",
+            str(zip_path),
             media_type="application/zip",
+            filename="NeonClipping_Clips.zip",
             background=BackgroundTask(
-                shutil.rmtree,
-                folder,
-                ignore_errors=True
+                shutil.rmtree, workdir, ignore_errors=True
             )
         )
 
     except HTTPException:
-        shutil.rmtree(folder, ignore_errors=True)
+        shutil.rmtree(workdir, ignore_errors=True)
         raise
-
-    except Exception as error:
-        print("Processing error:", repr(error))
-        shutil.rmtree(folder, ignore_errors=True)
-        raise HTTPException(500, "Processing error")
-
+    except Exception as e:
+        shutil.rmtree(workdir, ignore_errors=True)
+        raise HTTPException(status_code=500, detail=str(e))
     finally:
         await file.close()
 
 
 if __name__ == "__main__":
+    import uvicorn
     port = int(os.environ.get("PORT", 10000))
     uvicorn.run(app, host="0.0.0.0", port=port)
     
